@@ -1,0 +1,165 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>music_club</title>
+<style>
+  body{margin:0;background:#0f1115;color:#e8eef7;font:16px/1.5 system-ui,Arial}
+  .wrap{max-width:900px;margin:24px auto;padding:0 16px}
+  h1{font-size:22px}
+  .row{display:grid;grid-template-columns:220px 1fr;gap:16px}
+  .card{background:#161a22;border:1px solid #243047;border-radius:12px;padding:12px}
+  .btn{display:block;width:100%;text-align:left;padding:10px;border-radius:10px;border:1px solid #243047;background:#1a2130;color:#e8eef7;cursor:pointer;margin:6px 0}
+  .btn.active{background:#232d48}
+  .song{display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:1px solid #243047}
+  .song:last-child{border-bottom:0}
+  .meta{opacity:.7;font-size:12px}
+  /* 歌词视觉 */
+  #lyricsBox{white-space:pre-wrap;line-height:1.75;color:#a7b1c2}
+
+  /* 让左侧日期可滚动，避免被裁掉 */
+  #days{ max-height:60vh; overflow:auto; }
+</style>
+
+<div class="wrap">
+  <h1>music_club</h1>
+  <div class="row">
+    <aside class="card">
+      <b>Choice_Date</b>
+      <div id="days"></div>
+    </aside>
+    <main class="card">
+      <div id="list"><i>Please select the date on the left</i></div>
+
+      <!-- 播放器 -->
+      <div style="margin-top:10px" class="card">
+        <div id="now" class="meta">No song selected</div>
+        <audio id="player" controls style="width:100%"></audio>
+      </div>
+
+      <!-- 歌词显示区域 -->
+      <div style="margin-top:10px" class="card">
+        <div class="meta" style="margin-bottom:6px">Lyrics</div>
+        <div id="lyricsBox">After selecting a song, the lyrics will be displayed...</div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+/* === 只改这两处就行 === */
+const DAILY_DIR = 'https://www.len-chat.ca/daily-songs/'; // 你的歌单目录
+const DATES = ['2025-09-16','2025-09-23','2025-09-23(2)','2025-10-07','2025-10-07(2)']; // 更多日期直接往这里加
+
+/* 渲染左侧日期按钮（稳） */
+const daysEl = document.getElementById('days');
+console.log('DATES =', DATES);
+
+// 先清空再渲染，避免重复
+daysEl.innerHTML = DATES
+  .map(d => `<button class="btn" data-day="${d}">${d}</button>`)
+  .join('');
+
+const btns = daysEl.querySelectorAll('.btn');
+console.log('days rendered =', btns.length);
+
+btns.forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    loadDay(btn.dataset.day, btn);
+  });
+});
+
+/* 加载指定日期歌单（带防缓存参数） */
+async function loadDay(day, btn){
+  document.querySelectorAll('#days .btn').forEach(x=>x.classList.remove('active'));
+  btn.classList.add('active');
+
+  const url = `${DAILY_DIR}${day}.json?v=${Date.now()}`; // 防缓存
+  try{
+    const res = await fetch(url, {cache:'no-store'});
+    if(!res.ok) throw new Error(res.status + ' ' + res.statusText);
+    const data = await res.json();
+    renderSongs(data.songs||[], day);
+  }catch(e){
+    document.getElementById('list').innerHTML =
+      `<div>未找到歌单：<code>${url}</code></div>`;
+    console.error('loadDay error:', e);
+  }
+}
+
+/* 渲染歌曲列表并可播放 */
+const listEl = document.getElementById('list');
+const player = document.getElementById('player');
+const nowEl = document.getElementById('now');
+const lyricsBox = document.getElementById('lyricsBox');
+
+function renderSongs(songs, day){
+  if(!songs.length){
+    listEl.innerHTML = '<i>这天还没有歌曲</i>';
+    lyricsBox.textContent = '选择歌曲后将显示歌词...';
+    player.removeAttribute('src');
+    nowEl.textContent = '未选择歌曲';
+    return;
+  }
+  listEl.innerHTML = '';
+  songs.forEach((s,i)=>{
+    const row=document.createElement('div');
+    row.className='song';
+    row.innerHTML = `
+      <div>
+        <div><b>${s.title||'未命名'}</b></div>
+        <div class="meta">${s.artist||''}</div>
+      </div>
+      <button>Play</button>`;
+    row.querySelector('button').onclick=()=>{
+      player.src = s.audio;
+      player.play().catch(()=>{});
+      nowEl.textContent = `${day} · ${s.title||''}${s.artist?(' · '+s.artist):''}`;
+      renderLyricsForSong(s);
+    };
+    listEl.appendChild(row);
+  });
+}
+
+/* 工具：转义 HTML */
+function escapeHTML(s){
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+/* 工具：如果是 LRC，去掉时间标签，转成普通文本 */
+function lrcToPlain(text){
+  return text
+    .split(/\r?\n/)
+    .map(line => line.replace(/\[(\d{1,2}):(\d{2})(?:\.\d{1,2})?\]/g,'').trim())
+    .filter(line => line.length>0)
+    .join('\n');
+}
+
+/* 显示歌词（支持 lyrics 或 lyricsUrl） */
+async function renderLyricsForSong(song){
+  if(!lyricsBox) return;
+  lyricsBox.textContent = '加载歌词中...';
+
+  try{
+    let raw = '';
+    if (song.lyrics) {
+      raw = song.lyrics;
+    } else if (song.lyricsUrl) {
+      const r = await fetch(song.lyricsUrl, {cache:'no-store'});
+      raw = await r.text();
+    } else {
+      lyricsBox.textContent = '暂无歌词';
+      return;
+    }
+    const probablyLRC = /\[\d{1,2}:\d{2}(?:\.\d{1,2})?\]/.test(raw);
+    const plain = probablyLRC ? lrcToPlain(raw) : raw;
+    lyricsBox.innerHTML = `<pre>${escapeHTML(plain)}</pre>`;
+  }catch(e){
+    lyricsBox.textContent = '歌词加载失败';
+    console.error('lyrics error:', e);
+  }
+}
+
+/* 默认点击“最新日期”（最后一个） */
+if(btns.length){ btns[btns.length - 1].click(); }
+</script>
